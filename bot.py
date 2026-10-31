@@ -106,7 +106,10 @@ async def check_one(username: str, session: aiohttp.ClientSession, semaphore: as
                 return Result(username, "BAND")
             fcode, fhtml = await request_html(session, f"https://fragment.com/username/{quote(username)}")
             fragment = fragment_class(fcode, fhtml)
-            return Result(username, "BO‘SH" if fragment == "TEKIN" else fragment, fragment)
+            # Faqat Fragment 404/410 bilan tasdiqlangan username BO‘SH hisoblanadi.
+            # Auksion yoki noaniq javoblar xato qilib BO‘SH deb chiqarilmasligi
+            # uchun BAND sifatida qaytariladi.
+            return Result(username, "BO‘SH" if fragment == "TEKIN" else "BAND", fragment)
         except asyncio.TimeoutError:
             return Result(username, "XATO", error="timeout")
         except Exception as exc:
@@ -147,17 +150,17 @@ async def check_all(usernames: list[str], progress: Message) -> list[Result]:
 
 
 def statistics(results: list[Result]) -> str:
-    counts = {key: sum(r.status == key for r in results) for key in ("BAND", "BO‘SH", "AUKSION", "NOANIQ", "XATO")}
+    busy_count = sum(r.status == "BAND" for r in results)
+    free_count = sum(r.status == "BO‘SH" for r in results)
+    error_count = sum(r.status == "XATO" for r in results)
     free = [r.username for r in results if r.status == "BO‘SH"]
 
     text = (
         "<b>✅ Tekshiruv tugadi!</b>\n\n"
         f"<b>📊 Jami:</b> {len(results)}\n"
-        f"<b>🔴 Band:</b> {counts['BAND']}\n"
-        f"<b>🟢 Bo‘sh:</b> {counts['BO‘SH']}\n"
-        f"<b>🟡 Auksion:</b> {counts['AUKSION']}\n"
-        f"<b>⚪ Noaniq:</b> {counts['NOANIQ']}\n"
-        f"<b>⚠️ Xato:</b> {counts['XATO']}"
+        f"<b>🔴 Band:</b> {busy_count}\n"
+        f"<b>🟢 Bo‘sh:</b> {free_count}\n"
+        f"<b>⚠️ Xato:</b> {error_count}"
     )
 
     if free and len(free) <= 80:
