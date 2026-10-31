@@ -80,19 +80,12 @@ async def request_html(session: aiohttp.ClientSession, url: str) -> tuple[int, s
     return 0, ""
 
 
-def telegram_busy(html: str) -> bool:
+def telegram_is_free(username: str, html: str) -> bool:
     soup = BeautifulSoup(html, "html.parser")
-    return bool(soup.select_one(".tgme_page_title, .tgme_page_extra"))
-
-
-def fragment_is_auction(html: str) -> bool:
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
-    markers = (
-        "auction", "auksion", "place bid", "make an offer",
-        "current bid", "highest bid", "collectible username",
-        "buy username", "offer", "bid"
-    )
-    return any(marker in text for marker in markers)
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    expected_title = f"Telegram: Contact @{username}"
+    has_profile = bool(soup.select_one(".tgme_page_title, .tgme_page_extra"))
+    return title.casefold() == expected_title.casefold() and not has_profile
 
 
 async def check_one(username: str, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> Result:
@@ -101,24 +94,12 @@ async def check_one(username: str, session: aiohttp.ClientSession, semaphore: as
             # Render serverida t.me ayrim hollarda proxy sahifasini qaytaradi.
             # telegram.me esa xuddi shu Telegram sahifasining ishlaydigan aliasidir.
             code, html = await request_html(session, f"https://telegram.me/{quote(username)}")
-            if code == 0:
+            if code != 200:
                 return Result(username, "BAND")
-            if telegram_busy(html):
-                return Result(username, "BAND")
-
-            # Fragment faqat qo‘shimcha tekshiruv. U bloklansa yoki javob bermasa,
-            # Telegram sahifasining aniq "Contact" natijasiga tayanamiz.
-            try:
-                fcode, fhtml = await request_html(
-                    session,
-                    f"https://fragment.com/username/{quote(username)}",
-                )
-                if fcode == 200 and fragment_is_auction(fhtml):
-                    return Result(username, "BAND")
-            except Exception:
-                pass
-
-            return Result(username, "BO‘SH")
+            return Result(
+                username,
+                "BO‘SH" if telegram_is_free(username, html) else "BAND",
+            )
         except asyncio.TimeoutError:
             return Result(username, "BAND")
         except Exception:
