@@ -1,4 +1,5 @@
 import asyncio
+from html import escape
 import io
 import logging
 import os
@@ -147,10 +148,27 @@ async def check_all(usernames: list[str], progress: Message) -> list[Result]:
 
 def statistics(results: list[Result]) -> str:
     counts = {key: sum(r.status == key for r in results) for key in ("BAND", "BO‘SH", "AUKSION", "NOANIQ", "XATO")}
-    return ("✅ Tekshiruv tugadi!\n\n"
-            f"📊 Jami: {len(results)}\n🔴 Band: {counts['BAND']}\n"
-            f"🟢 Haqiqatan bo‘sh: {counts['BO‘SH']}\n🟡 Auksion: {counts['AUKSION']}\n"
-            f"⚪ Noaniq: {counts['NOANIQ']}\n⚠️ Xato: {counts['XATO']}")
+    free = [r.username for r in results if r.status == "BO‘SH"]
+
+    text = (
+        "<b>✅ Tekshiruv tugadi!</b>\n\n"
+        f"<b>📊 Jami:</b> {len(results)}\n"
+        f"<b>🔴 Band:</b> {counts['BAND']}\n"
+        f"<b>🟢 Bo‘sh:</b> {counts['BO‘SH']}\n"
+        f"<b>🟡 Auksion:</b> {counts['AUKSION']}\n"
+        f"<b>⚪ Noaniq:</b> {counts['NOANIQ']}\n"
+        f"<b>⚠️ Xato:</b> {counts['XATO']}"
+    )
+
+    if free and len(free) <= 80:
+        text += (
+            "\n\n<b>🟢 Bo‘sh username’lar:</b>\n"
+            + "\n".join(f"@{escape(username)}" for username in free)
+        )
+    elif not free:
+        text += "\n\n<b>🟢 Bo‘sh username topilmadi.</b>"
+
+    return text
 
 
 async def send_free_file(message: Message, usernames: list[str]):
@@ -183,10 +201,13 @@ async def process(message: Message, raw_text: str):
         await progress.edit_text(f"✅ Tekshiruv tugadi: {len(results)}/{len(usernames)}")
         await message.answer(statistics(results))
         free = [r.username for r in results if r.status == "BO‘SH"]
-        if free:
+        if len(free) > 80:
             await send_free_file(message, free)
         if invalid:
-            await message.answer("⚠️ Qoidaga mos kelmaganlar:\n" + ", ".join(invalid[:30]))
+            invalid_text = ", ".join(escape(item) for item in invalid[:30])
+            await message.answer(
+                "<b>⚠️ Qoidaga mos kelmaganlar:</b>\n" + invalid_text
+            )
 
 
 @router.message(CommandStart())
