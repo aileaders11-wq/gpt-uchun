@@ -22,6 +22,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MAX_USERNAME_COUNT = 1000
 CONCURRENT_REQUESTS = 20
 PROGRESS_UPDATE_SECONDS = 3.5
+FRAGMENT_BULK_URL = "https://tg-username-api.vercel.app/api/v1/check/bulk"
+FRAGMENT_BATCH_SIZE = 15
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=12, connect=5, sock_connect=5, sock_read=10)
 HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/130.0 Safari/537.36", "Accept-Language": "en-US,en;q=0.9"}
 USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9]{4,31}$")
@@ -107,6 +109,78 @@ async def check_one(username: str, session: aiohttp.ClientSession, semaphore: as
             return Result(username, "BAND")
 
 
+async def verify_fragment_batch(
+    usernames: list[str],
+    session: aiohttp.ClientSession,
+) -> dict[str, bool]:
+    """True faqat Fragment'da username topilmaganida qaytariladi."""
+    for attempt in range(3):
+        try:
+            async with session.post(
+                FRAGMENT_BULK_URL,
+                json={"usernames": usernames},
+                timeout=aiohttp.ClientTimeout(total=45),
+            ) as response:
+                if response.status == 429:
+                    retry_after = response.headers.get("Retry-After", "5")
+                    try:
+                        delay = min(max(float(retry_after), 2.0), 60.0)
+                    except ValueError:
+                        delay = 5.0
+                    await asyncio.sleep(delay)
+                    continue
+
+                if response.status != 200:
+                    return {username: False for username in usernames}
+
+                payload = await response.json(content_type=None)
+                verified = {username: False for username in usernames}
+
+                for item in payload.get("results", []):
+                    username = str(item.get("username") or "").lower()
+                    fragment = item.get("fragment") or {}
+                    result = item.get("result") or {}
+                    fragment_error = fragment.get("error")
+                    fragment_found = fragment.get("found")
+                    overall_status = result.get("status")
+
+                    verified[username] = (
+                        fragment_found is False
+                        and not fragment_error
+                        and overall_status not in {"taken", "fragment_collectible"}
+                    )
+
+                return verified
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            if attempt < 2:
+                await asyncio.sleep(2.0 * (attempt + 1))
+
+    return {username: False for username in usernames}
+
+
+async def verify_fragment_candidates(
+    usernames: list[str],
+    session: aiohttp.ClientSession,
+    progress: Message,
+) -> dict[str, bool]:
+    verified: dict[str, bool] = {}
+    batches = [
+        usernames[index:index + FRAGMENT_BATCH_SIZE]
+        for index in range(0, len(usernames), FRAGMENT_BATCH_SIZE)
+    ]
+
+    for index, batch in enumerate(batches, start=1):
+        try:
+            await progress.edit_text(
+                f"🔍 Fragment tekshirilmoqda: {index}/{len(batches)}..."
+            )
+        except Exception:
+            pass
+        verified.update(await verify_fragment_batch(batch, session))
+
+    return verified
+
+
 async def check_all(usernames: list[str], progress: Message) -> list[Result]:
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
     connector = aiohttp.TCPConnector(limit=CONCURRENT_REQUESTS, limit_per_host=CONCURRENT_REQUESTS, ttl_dns_cache=300)
@@ -135,6 +209,18 @@ async def check_all(usernames: list[str], progress: Message) -> list[Result]:
         finally:
             stop.set()
             await progress_task
+
+        candidates = [result.username for result in results if result.status == "BO‘SH"]
+        if candidates:
+            fragment_verified = await verify_fragment_candidates(
+                candidates,
+                session,
+                progress,
+            )
+            for result in results:
+                if result.status == "BO‘SH" and not fragment_verified.get(result.username, False):
+                    result.status = "BAND"
+
         result_map = {r.username: r for r in results}
         return [result_map[u] for u in usernames]
 
