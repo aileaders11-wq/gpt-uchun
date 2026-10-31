@@ -33,7 +33,6 @@ user_locks: dict[int, asyncio.Lock] = {}
 class Result:
     username: str
     status: str
-    fragment: str = "-"
     error: Optional[str] = None
 
 
@@ -86,14 +85,9 @@ def telegram_busy(html: str) -> bool:
     return bool(soup.select_one(".tgme_page_title, .tgme_page_extra"))
 
 
-def fragment_class(status_code: int, html: str) -> str:
-    if status_code in (404, 410):
-        return "TEKIN"
-    if status_code != 200:
-        return "NOANIQ"
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
-    markers = ("auction", "auksion", "place bid", "make an offer", "current bid", "highest bid", "collectible username", "buy username", "offer", "bid")
-    return "AUKSION" if any(marker in text for marker in markers) else "NOANIQ"
+def fragment_confirms_free(status_code: int) -> bool:
+    """Faqat Fragment 404/410 qaytarsa username'ni bo'sh deb qabul qilamiz."""
+    return status_code in (404, 410)
 
 
 async def check_one(username: str, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> Result:
@@ -101,20 +95,16 @@ async def check_one(username: str, session: aiohttp.ClientSession, semaphore: as
         try:
             code, html = await request_html(session, f"https://t.me/{quote(username)}")
             if code == 0:
-                return Result(username, "XATO", error="Telegram javob bermadi")
+                return Result(username, "BAND")
             if telegram_busy(html):
                 return Result(username, "BAND")
-            fcode, fhtml = await request_html(session, f"https://fragment.com/username/{quote(username)}")
-            fragment = fragment_class(fcode, fhtml)
-            # Faqat Fragment 404/410 bilan tasdiqlangan username BO‘SH hisoblanadi.
-            # Auksion yoki noaniq javoblar xato qilib BO‘SH deb chiqarilmasligi
-            # uchun BAND sifatida qaytariladi.
-            return Result(username, "BO‘SH" if fragment == "TEKIN" else "BAND", fragment)
+            fcode, _ = await request_html(session, f"https://fragment.com/username/{quote(username)}")
+            return Result(username, "BO‘SH" if fragment_confirms_free(fcode) else "BAND")
         except asyncio.TimeoutError:
-            return Result(username, "XATO", error="timeout")
-        except Exception as exc:
+            return Result(username, "BAND")
+        except Exception:
             logging.exception("Check failed for %s", username)
-            return Result(username, "XATO", error=type(exc).__name__)
+            return Result(username, "BAND")
 
 
 async def check_all(usernames: list[str], progress: Message) -> list[Result]:
@@ -152,15 +142,13 @@ async def check_all(usernames: list[str], progress: Message) -> list[Result]:
 def statistics(results: list[Result]) -> str:
     busy_count = sum(r.status == "BAND" for r in results)
     free_count = sum(r.status == "BO‘SH" for r in results)
-    error_count = sum(r.status == "XATO" for r in results)
     free = [r.username for r in results if r.status == "BO‘SH"]
 
     text = (
         "<b>✅ Tekshiruv tugadi!</b>\n\n"
         f"<b>📊 Jami:</b> {len(results)}\n"
         f"<b>🔴 Band:</b> {busy_count}\n"
-        f"<b>🟢 Bo‘sh:</b> {free_count}\n"
-        f"<b>⚠️ Xato:</b> {error_count}"
+        f"<b>🟢 Bo‘sh:</b> {free_count}"
     )
 
     if free and len(free) <= 80:
